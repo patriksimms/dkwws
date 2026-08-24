@@ -1,0 +1,46 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          check-latest: true
+
+      - name: Build release archives
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/arm64; do
+            goos=${target%/*}
+            goarch=${target#*/}
+            stage="dist/dkwws_${VERSION}_${goos}_${goarch}"
+            mkdir -p "$stage"
+            for cmd in dkwws dkwws-viewer; do
+              CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build \
+                -trimpath \
+                -ldflags "-s -w -X github.com/patriksimms/dkwws/internal/cli.Version=${VERSION} -X main.version=${VERSION}" \
+                -o "$stage/$cmd" "./cmd/$cmd"
+            done
+            cp README.md "$stage/"
+            tar -czf "${stage}.tar.gz" -C dist "$(basename "$stage")"
+            rm -rf "$stage"
+          done
+          cd dist && sha256sum ./*.tar.gz > SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" --generate-notes dist/*.tar.gz dist/SHA256SUMS
