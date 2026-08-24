@@ -149,7 +149,7 @@ func (h *Handler) lookup(w http.ResponseWriter, r *http.Request, token string) (
 // refusing our own credentials is logged as an error: otherwise a viewer with
 // a revoked key pair would answer 404 for every link and say nothing about it.
 func (h *Handler) deny(w http.ResponseWriter, token, reason string, cause error) {
-	if store.AccessDenied(cause) {
+	if store.CredentialsRejected(cause) {
 		h.logger.Error("storage backend refused the viewer credentials",
 			"token", tokenPrefix(token), "error", cause)
 	} else {
@@ -168,7 +168,7 @@ func (h *Handler) objectError(w http.ResponseWriter, token string, err error) {
 	if errors.Is(err, store.ErrNotFound) {
 		status, message = http.StatusNotFound, "not found"
 	}
-	if store.AccessDenied(err) {
+	if store.CredentialsRejected(err) {
 		h.logger.Error("storage backend refused the viewer credentials",
 			"token", tokenPrefix(token), "error", err)
 	} else {

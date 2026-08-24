@@ -166,9 +166,9 @@ func TestWriteReportsDeniedCredentialsAsSuch(t *testing.T) {
 	}
 }
 
-// A read still masks the denial, but the cause stays recognisable so the
-// viewer can log a broken deployment instead of silently 404ing every link.
-func TestDeniedReadIsMaskedButStillRecognisable(t *testing.T) {
+// A read masks a denial as ErrNotFound, so the viewer answers identically
+// whether a key is missing or off-limits.
+func TestDeniedReadIsMaskedAsNotFound(t *testing.T) {
 	fake := newFake(t)
 	uploader := newStore(t, fake, uploaderKey, uploaderSecret)
 	ctx := context.Background()
@@ -176,17 +176,37 @@ func TestDeniedReadIsMaskedButStillRecognisable(t *testing.T) {
 	if err := uploader.PutNew(ctx, "objects/abc", []byte("data"), "text/plain"); err != nil {
 		t.Fatalf("PutNew: %v", err)
 	}
-	_, _, err := uploader.Get(ctx, "objects/abc")
-	if !errors.Is(err, store.ErrNotFound) {
+	if _, _, err := uploader.Get(ctx, "objects/abc"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Get error = %v, want it masked as ErrNotFound", err)
 	}
-	if !store.AccessDenied(err) {
-		t.Error("AccessDenied should still recognise the masked denial")
+}
+
+// Only an unambiguous credential failure counts as one. S3 answers a missing
+// key with 403 AccessDenied when the caller cannot list the bucket, which the
+// documented viewer policy does not allow, so a bare denial says nothing about
+// whether our key pair is still good.
+func TestCredentialsRejectedIgnoresAmbiguousDenials(t *testing.T) {
+	fake := newFake(t)
+	ctx := context.Background()
+
+	uploader := newStore(t, fake, uploaderKey, uploaderSecret)
+	if err := uploader.PutNew(ctx, "objects/abc", []byte("data"), "text/plain"); err != nil {
+		t.Fatalf("PutNew: %v", err)
 	}
-	// Credentials that may read report a genuinely missing key as missing.
+	_, _, err := uploader.Get(ctx, "objects/abc")
+	if store.CredentialsRejected(err) {
+		t.Errorf("a policy denial was reported as a credential failure: %v", err)
+	}
+
 	reader := newStore(t, fake, viewerKey, viewerSecret)
-	if _, _, err := reader.Get(ctx, "objects/definitely-not-there"); store.AccessDenied(err) {
-		t.Error("AccessDenied reported a genuinely missing object as a denial")
+	if _, _, err := reader.Get(ctx, "objects/definitely-not-there"); store.CredentialsRejected(err) {
+		t.Errorf("a missing object was reported as a credential failure: %v", err)
+	}
+
+	// A revoked or rotated key pair, which is the case worth an alert.
+	revoked := newStore(t, fake, "AKIAREVOKED", "gone")
+	if _, err := revoked.GetLink(ctx, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); !store.CredentialsRejected(err) {
+		t.Errorf("a revoked access key was not recognised: %v", err)
 	}
 }
 

@@ -153,10 +153,9 @@ func SanitizeFilename(name string) string {
 		// Trim again: the cut can land on a separator, and a name that is not
 		// a fixed point of this function is rejected by Record.Validate,
 		// which would turn a successful upload into a permanently dead link.
+		// The prefix cannot become empty: out was already trimmed, so it does
+		// not start with a separator, and maxLen leaves room for it.
 		out = strings.Trim(out[:maxLen-len(ext)], "-.") + ext
-		if out == "" {
-			return "file"
-		}
 	}
 	return out
 }

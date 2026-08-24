@@ -14,8 +14,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
@@ -24,6 +26,10 @@ import (
 	"github.com/patriksimms/dkwws/internal/config"
 	"github.com/patriksimms/dkwws/internal/link"
 )
+
+// responseHeaderTimeout bounds how long the backend may take to start
+// answering. Without it a hung endpoint leaves the CLI blocked indefinitely.
+const responseHeaderTimeout = 30 * time.Second
 
 // Sentinel errors returned by the store. Callers distinguish these instead of
 // inspecting S3 error codes themselves.
@@ -62,10 +68,16 @@ func New(cfg config.Config) (*Store, error) {
 		UsePathStyle: cfg.PathStyle,
 		Credentials: credentials.NewStaticCredentialsProvider(
 			cfg.AccessKeyID, cfg.SecretAccessKey, ""),
-		// HTTPClient is left unset on purpose. The SDK then builds its own
-		// client, which refuses to follow a redirect that would quietly turn
-		// a PutObject into a GET, and which has no whole-request deadline
-		// that could truncate the viewer streaming a large object.
+		// The SDK's own client is used rather than a bare http.Client,
+		// because it refuses to follow any redirect other than 307/308 — a
+		// 302 would otherwise turn a PutObject into a GET that "succeeds"
+		// without storing anything.
+		//
+		// The bound is on time-to-first-byte rather than the whole request:
+		// a whole-request deadline would cut the viewer off mid-stream while
+		// it is legitimately sending a large object to a slow client.
+		HTTPClient: awshttp.NewBuildableClient().WithTransportOptions(
+			func(tr *http.Transport) { tr.ResponseHeaderTimeout = responseHeaderTimeout }),
 		// Non-AWS backends commonly reject the flexible-checksum trailers the
 		// SDK would otherwise add to every request. dkwws stores its own
 		// SHA-256 in the link record instead.
@@ -190,7 +202,9 @@ func mapPutError(key string, err error) error {
 	if apiCode(err) == "NotImplemented" {
 		return fmt.Errorf("%w: %v", ErrConditionalWriteUnsupported, err)
 	}
-	if AccessDenied(err) {
+	// On a write there is no "the key might simply not exist" alternative,
+	// so any refusal is a genuine permissions problem.
+	if statusOf(err) == http.StatusForbidden || isDenialCode(apiCode(err)) {
 		return fmt.Errorf("%s: %w: %v", key, ErrAccessDenied, err)
 	}
 	return fmt.Errorf("s3 request for %s failed: %w", key, err)
@@ -212,16 +226,34 @@ func mapError(key string, err error) error {
 	return fmt.Errorf("s3 request for %s failed: %w", key, err)
 }
 
-// AccessDenied reports whether the backend refused the credentials. The viewer
-// uses it to log a broken deployment loudly while still answering 404, which
-// it could not do from ErrNotFound alone.
-func AccessDenied(err error) bool {
+// CredentialsRejected reports whether the backend refused the credentials
+// themselves. The viewer uses it to log a broken deployment loudly while still
+// answering 404, which it could not do from ErrNotFound alone.
+//
+// A bare 403 or AccessDenied deliberately does not count. S3 answers GetObject
+// for a missing key with 403 AccessDenied when the caller has no
+// s3:ListBucket — which the documented viewer policy does not grant — so
+// treating those as credential failures would raise an error for every unknown
+// token and drown out the case this exists to surface.
+func CredentialsRejected(err error) bool {
 	switch apiCode(err) {
-	case "AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch",
-		"AuthorizationHeaderMalformed", "InvalidSecurity":
+	case "InvalidAccessKeyId", "SignatureDoesNotMatch", "AuthorizationHeaderMalformed",
+		"InvalidSecurity", "ExpiredToken", "TokenRefreshRequired":
 		return true
 	}
-	return statusOf(err) == http.StatusForbidden
+	return false
+}
+
+// isDenialCode covers the codes that mean "not allowed", including the
+// ambiguous ones that only a write can interpret safely.
+func isDenialCode(code string) bool {
+	switch code {
+	case "AccessDenied", "AllAccessDisabled", "InvalidAccessKeyId",
+		"SignatureDoesNotMatch", "AuthorizationHeaderMalformed",
+		"InvalidSecurity", "ExpiredToken", "TokenRefreshRequired":
+		return true
+	}
+	return false
 }
 
 func statusOf(err error) int {
