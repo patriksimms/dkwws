@@ -7,7 +7,7 @@ S3-compatible object storage and get back a link you can paste to someone else.
 $ dkwws upload plan.html
 uploading plan.html (41231 bytes) to dkwws
 link expires 2026-09-23 12:04 UTC
-https://dkwws.psimms.de/s/k3mv7q2xh9f4b8dz6ncp5rtjws/plan.html
+https://dkwws.psimms.de/s/ycdpbvvbdtentlk57ixealxnhwixeg6h/plan.html
 ```
 
 Stdout is the URL and nothing else, so an agent can capture it directly.
@@ -100,7 +100,7 @@ secret key would go over the wire in the clear. Set
 $ dkwws upload plan.html                 # print the share URL
 $ dkwws upload -json plan.html           # url, object, expiry, size, sha256
 $ dkwws renew https://dkwws.../plan.html # fresh token and expiry, same file
-$ dkwws renew k3mv7q2xh9f4b8dz6ncp5rtjws # a bare token works too
+$ dkwws renew ycdpbvvbdtentlk57ixealxnhwixeg6h # a bare token works too
 ```
 
 `upload` refuses files over 25 MiB; pass `-max-size` in bytes to override.

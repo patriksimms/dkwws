@@ -118,12 +118,12 @@ func (h *Handler) serveLink(w http.ResponseWriter, r *http.Request) {
 // response itself when it cannot.
 func (h *Handler) lookup(w http.ResponseWriter, r *http.Request, token string) (link.Record, bool) {
 	if !link.ValidToken(token) {
-		h.deny(w, token, "malformed token")
+		h.deny(w, token, "malformed token", nil)
 		return link.Record{}, false
 	}
 	rec, err := h.store.GetLink(r.Context(), token)
 	if errors.Is(err, store.ErrNotFound) {
-		h.deny(w, token, "unknown token")
+		h.deny(w, token, "unknown token", err)
 		return link.Record{}, false
 	}
 	if err != nil {
@@ -144,8 +144,17 @@ func (h *Handler) lookup(w http.ResponseWriter, r *http.Request, token string) (
 
 // deny answers every rejected token identically, so a caller cannot tell an
 // unknown token from one that exists but is not theirs.
-func (h *Handler) deny(w http.ResponseWriter, token, reason string) {
-	h.logger.Info("share link rejected", "token", tokenPrefix(token), "reason", reason)
+//
+// The response is the same either way, but a rejection caused by the backend
+// refusing our own credentials is logged as an error: otherwise a viewer with
+// a revoked key pair would answer 404 for every link and say nothing about it.
+func (h *Handler) deny(w http.ResponseWriter, token, reason string, cause error) {
+	if store.AccessDenied(cause) {
+		h.logger.Error("storage backend refused the viewer credentials",
+			"token", tokenPrefix(token), "error", cause)
+	} else {
+		h.logger.Info("share link rejected", "token", tokenPrefix(token), "reason", reason)
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
 	writePlain(w, http.StatusNotFound, "not found")
@@ -159,7 +168,12 @@ func (h *Handler) objectError(w http.ResponseWriter, token string, err error) {
 	if errors.Is(err, store.ErrNotFound) {
 		status, message = http.StatusNotFound, "not found"
 	}
-	h.logger.Error("read linked object", "token", tokenPrefix(token), "error", err)
+	if store.AccessDenied(err) {
+		h.logger.Error("storage backend refused the viewer credentials",
+			"token", tokenPrefix(token), "error", err)
+	} else {
+		h.logger.Error("read linked object", "token", tokenPrefix(token), "error", err)
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writePlain(w, status, message)
 }

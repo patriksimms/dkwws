@@ -199,11 +199,32 @@ func TestFilePathHonoursXDG(t *testing.T) {
 	os.Unsetenv(config.KeyConfigFile)
 	t.Setenv("XDG_CONFIG_HOME", "/xdg")
 
-	path, err := config.FilePath()
-	if err != nil {
-		t.Fatal(err)
+	if want := filepath.Join("/xdg", "dkwws", "config"); config.FilePath() != want {
+		t.Errorf("FilePath = %q, want %q", config.FilePath(), want)
 	}
-	if want := filepath.Join("/xdg", "dkwws", "config"); path != want {
-		t.Errorf("FilePath = %q, want %q", path, want)
+}
+
+// The viewer's container image sets no HOME. An absent home directory means
+// there is no optional config file to read, not that startup should fail.
+func TestLoadWithoutHomeDirectory(t *testing.T) {
+	isolate(t)
+	t.Setenv(config.KeyConfigFile, "")
+	os.Unsetenv(config.KeyConfigFile)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	os.Unsetenv("XDG_CONFIG_HOME")
+	t.Setenv("HOME", "")
+	os.Unsetenv("HOME")
+
+	t.Setenv(config.KeyEndpoint, "https://s3.example.com")
+	t.Setenv(config.KeyBucket, "dkwws")
+	t.Setenv(config.KeyAccessKeyID, "AKIA")
+	t.Setenv(config.KeySecretKey, "secret")
+
+	cfg, _, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load without HOME: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 }

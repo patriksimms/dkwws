@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -26,10 +25,6 @@ import (
 	"github.com/patriksimms/dkwws/internal/link"
 )
 
-// requestTimeout bounds a single S3 request, including streaming a 25 MiB
-// upload over a slow link.
-const requestTimeout = 5 * time.Minute
-
 // Sentinel errors returned by the store. Callers distinguish these instead of
 // inspecting S3 error codes themselves.
 var (
@@ -38,6 +33,9 @@ var (
 	ErrNotFound = errors.New("object not found")
 	// ErrAlreadyExists means a conditional create lost the race for a key.
 	ErrAlreadyExists = errors.New("object already exists")
+	// ErrAccessDenied means the backend refused the credentials. Writes
+	// report it directly; reads deliberately do not, see mapError.
+	ErrAccessDenied = errors.New("access denied by the storage backend")
 	// ErrConditionalWriteUnsupported means the backend rejected
 	// If-None-Match, which this tool relies on to never overwrite an upload.
 	ErrConditionalWriteUnsupported = errors.New("backend does not support conditional object creation (If-None-Match: *)")
@@ -64,7 +62,10 @@ func New(cfg config.Config) (*Store, error) {
 		UsePathStyle: cfg.PathStyle,
 		Credentials: credentials.NewStaticCredentialsProvider(
 			cfg.AccessKeyID, cfg.SecretAccessKey, ""),
-		HTTPClient: &http.Client{Timeout: requestTimeout},
+		// HTTPClient is left unset on purpose. The SDK then builds its own
+		// client, which refuses to follow a redirect that would quietly turn
+		// a PutObject into a GET, and which has no whole-request deadline
+		// that could truncate the viewer streaming a large object.
 		// Non-AWS backends commonly reject the flexible-checksum trailers the
 		// SDK would otherwise add to every request. dkwws stores its own
 		// SHA-256 in the link record instead.
@@ -172,9 +173,13 @@ func (s *Store) GetLink(ctx context.Context, token string) (link.Record, error) 
 	return rec, nil
 }
 
-// mapPutError translates conditional-create failures. A backend that does not
-// implement If-None-Match answers 501 or 400 rather than 412, and that has to
+// mapPutError translates write failures. A backend that does not implement
+// If-None-Match answers NotImplemented rather than 412, and that has to
 // surface as a configuration problem instead of a lost race.
+//
+// Unlike reads, a write reports a refused credential as exactly that: there is
+// no bucket to probe on the way in, and "not found" would send an operator
+// looking in the wrong place.
 func mapPutError(key string, err error) error {
 	switch statusOf(err) {
 	case http.StatusPreconditionFailed, http.StatusConflict:
@@ -182,22 +187,41 @@ func mapPutError(key string, err error) error {
 	case http.StatusNotImplemented:
 		return fmt.Errorf("%w: %v", ErrConditionalWriteUnsupported, err)
 	}
-	if code := apiCode(err); code == "NotImplemented" {
+	if apiCode(err) == "NotImplemented" {
 		return fmt.Errorf("%w: %v", ErrConditionalWriteUnsupported, err)
 	}
-	return mapError(key, err)
+	if AccessDenied(err) {
+		return fmt.Errorf("%s: %w: %v", key, ErrAccessDenied, err)
+	}
+	return fmt.Errorf("s3 request for %s failed: %w", key, err)
 }
 
+// mapError translates read failures. A refused credential is reported as
+// ErrNotFound on purpose, so the viewer answers identically whether a key is
+// missing or merely off-limits and cannot be used to probe the bucket. The
+// original error stays in the chain so AccessDenied can still recognise it.
 func mapError(key string, err error) error {
 	switch statusOf(err) {
 	case http.StatusNotFound, http.StatusForbidden:
-		return fmt.Errorf("%s: %w", key, ErrNotFound)
+		return fmt.Errorf("%s: %w", key, errors.Join(ErrNotFound, err))
 	}
 	switch apiCode(err) {
 	case "NoSuchKey", "NotFound", "AccessDenied":
-		return fmt.Errorf("%s: %w", key, ErrNotFound)
+		return fmt.Errorf("%s: %w", key, errors.Join(ErrNotFound, err))
 	}
 	return fmt.Errorf("s3 request for %s failed: %w", key, err)
+}
+
+// AccessDenied reports whether the backend refused the credentials. The viewer
+// uses it to log a broken deployment loudly while still answering 404, which
+// it could not do from ErrNotFound alone.
+func AccessDenied(err error) bool {
+	switch apiCode(err) {
+	case "AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch",
+		"AuthorizationHeaderMalformed", "InvalidSecurity":
+		return true
+	}
+	return statusOf(err) == http.StatusForbidden
 }
 
 func statusOf(err error) int {

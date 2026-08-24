@@ -224,6 +224,34 @@ func TestSameFilenameUploadsDoNotCollide(t *testing.T) {
 	}
 }
 
+// Sanitising a name that is entirely non-ASCII can strip the extension, so the
+// content type has to be guessed from the name the user actually gave.
+func TestNonASCIIHTMLNameStillRendersAsHTML(t *testing.T) {
+	h := newHarness(t)
+	srv := h.serveViewer(t)
+	path := writeFile(t, "plan.html", htmlBody)
+
+	var result cli.Result
+	if err := json.Unmarshal([]byte(h.mustRun(t, "upload", "-json", "-filename", "计划.html", path)), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ContentType != link.HTMLContentType {
+		t.Errorf("content_type = %q, want %q", result.ContentType, link.HTMLContentType)
+	}
+
+	resp, err := srv.Client().Get(srv.URL + "/s/" + result.Token + "/" + result.Filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("viewer status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != link.HTMLContentType {
+		t.Errorf("Content-Type = %q, want %q", got, link.HTMLContentType)
+	}
+}
+
 func TestUploadRejectsBadCredentials(t *testing.T) {
 	h := newHarness(t)
 	t.Setenv(config.KeySecretKey, "wrong-secret")
@@ -237,6 +265,10 @@ func TestUploadRejectsBadCredentials(t *testing.T) {
 	}
 	if len(h.fake.Keys("objects/")) != 0 {
 		t.Errorf("failed upload stored %v", h.fake.Keys("objects/"))
+	}
+	// "not found" would send an operator looking in the wrong place.
+	if stderr := h.stderr.String(); !strings.Contains(stderr, "credentials") {
+		t.Errorf("stderr should blame the credentials, got: %s", stderr)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/patriksimms/dkwws/internal/config"
 	"github.com/patriksimms/dkwws/internal/link"
 	"github.com/patriksimms/dkwws/internal/store"
 )
@@ -40,10 +41,14 @@ func (a *App) upload(ctx context.Context, args []string) error {
 		return err
 	}
 
-	filename := link.SanitizeFilename(firstNonEmpty(*name, path))
+	original := firstNonEmpty(*name, path)
+	filename := link.SanitizeFilename(original)
 	ct := *contentType
 	if ct == "" {
-		ct = link.ContentTypeFor(filename)
+		// Guess from the name the user gave us. Sanitising can strip the
+		// extension off a name that was entirely non-ASCII, which would serve
+		// an HTML plan as a download instead of rendering it.
+		ct = link.ContentTypeFor(original)
 	}
 	sum := sha256.Sum256(body)
 
@@ -115,6 +120,10 @@ func putNewObject(ctx context.Context, s *store.Store, body []byte, contentType 
 		err = s.PutNew(ctx, key, body, contentType)
 		if err == nil {
 			return key, nil
+		}
+		if errors.Is(err, store.ErrAccessDenied) {
+			return "", fmt.Errorf("the backend refused these credentials: %w; check %s, %s and that the key may write to %s",
+				err, config.KeyAccessKeyID, config.KeySecretKey, config.KeyBucket)
 		}
 		if !errors.Is(err, store.ErrAlreadyExists) {
 			return "", fmt.Errorf("upload object: %w", err)

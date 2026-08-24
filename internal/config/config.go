@@ -65,10 +65,7 @@ type Source struct {
 func Load() (Config, Source, error) {
 	var src Source
 
-	path, err := FilePath()
-	if err != nil {
-		return Config{}, src, err
-	}
+	path := FilePath()
 	values, err := readFile(path)
 	if err != nil {
 		return Config{}, src, err
@@ -119,24 +116,31 @@ func Load() (Config, Source, error) {
 
 // FilePath returns the configuration-file location, honouring
 // DKWWS_CONFIG_FILE and then XDG_CONFIG_HOME.
-func FilePath() (string, error) {
+//
+// It returns an empty path when there is no home directory to look in. The
+// file is optional, and the viewer's container image sets no HOME, so a
+// missing home must not stop a fully environment-configured process.
+func FilePath() string {
 	if v := strings.TrimSpace(os.Getenv(KeyConfigFile)); v != "" {
-		return v, nil
+		return v
 	}
 	if dir := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); dir != "" {
-		return filepath.Join(dir, "dkwws", "config"), nil
+		return filepath.Join(dir, "dkwws", "config")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("locate home directory: %w", err)
+		return ""
 	}
-	return filepath.Join(home, ".config", "dkwws", "config"), nil
+	return filepath.Join(home, ".config", "dkwws", "config")
 }
 
 // readFile parses a KEY=value file. It returns a nil map when the file does
 // not exist, and refuses to read a file that is readable by anyone but its
 // owner, because it holds long-lived credentials.
 func readFile(path string) (map[string]string, error) {
+	if path == "" {
+		return nil, nil
+	}
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil

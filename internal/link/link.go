@@ -150,7 +150,13 @@ func SanitizeFilename(name string) string {
 		if len(ext) > 16 {
 			ext = ""
 		}
-		out = out[:maxLen-len(ext)] + ext
+		// Trim again: the cut can land on a separator, and a name that is not
+		// a fixed point of this function is rejected by Record.Validate,
+		// which would turn a successful upload into a permanently dead link.
+		out = strings.Trim(out[:maxLen-len(ext)], "-.") + ext
+		if out == "" {
+			return "file"
+		}
 	}
 	return out
 }

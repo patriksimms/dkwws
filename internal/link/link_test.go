@@ -70,11 +70,32 @@ func TestSanitizeFilename(t *testing.T) {
 	}
 }
 
+// A name that is not a fixed point of SanitizeFilename would be written into a
+// link record that Record.Validate then rejects, so the upload would report
+// success and hand back a URL that 404s forever. Truncation is the case that
+// gets this wrong: the cut can land on a separator.
 func TestSanitizeFilenameIsIdempotent(t *testing.T) {
-	for _, in := range []string{"plan.html", "../../etc/passwd", "my plan.html", "", ".."} {
+	inputs := []string{"plan.html", "../../etc/passwd", "my plan.html", "", "..",
+		"计划.html", strings.Repeat("a", 200), strings.Repeat("a", 200) + ".html"}
+	// Every offset of a separator relative to the truncation point.
+	for _, unit := range []string{"ab ", "abc ", "abcd ", "a ", "..a", "a-"} {
+		inputs = append(inputs, strings.Repeat(unit, 120))
+	}
+	for _, in := range inputs {
 		once := SanitizeFilename(in)
-		if twice := SanitizeFilename(once); twice != once {
-			t.Errorf("SanitizeFilename(%q) = %q, then %q", in, once, twice)
+		twice := SanitizeFilename(once)
+		if twice != once {
+			t.Errorf("SanitizeFilename(%q...) = %q, then %q", in[:min(len(in), 12)], once, twice)
+		}
+		rec := Record{
+			Version:   RecordVersion,
+			ObjectKey: "objects/" + strings.Repeat("a", 26),
+			Filename:  once,
+			ExpiresAt: time.Now(),
+		}
+		if err := rec.Validate(); err != nil {
+			t.Errorf("a record naming SanitizeFilename(%q...) = %q is invalid: %v",
+				in[:min(len(in), 12)], once, err)
 		}
 	}
 }

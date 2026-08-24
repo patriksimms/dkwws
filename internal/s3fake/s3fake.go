@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/patriksimms/dkwws/internal/config"
 )
 
 // Permissions describes which key prefixes one set of credentials may read
@@ -65,6 +67,7 @@ type Server struct {
 	*httptest.Server
 
 	bucket string
+	region string
 
 	mu       sync.Mutex
 	creds    map[string]credential
@@ -77,6 +80,7 @@ type Server struct {
 func New(bucket string) *Server {
 	s := &Server{
 		bucket:   bucket,
+		region:   config.DefaultRegion,
 		creds:    map[string]credential{},
 		objects:  map[string]object{},
 		putCount: map[string]int{},
@@ -213,7 +217,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request, body []byt
 			return Permissions{}, false
 		}
 	}
-	if err := sig.verify(r, cred.secretKey, payloadHash); err != nil {
+	if err := sig.verify(r, cred.secretKey, s.region, payloadHash); err != nil {
 		writeError(w, r, http.StatusForbidden, "SignatureDoesNotMatch", err.Error())
 		return Permissions{}, false
 	}

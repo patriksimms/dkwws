@@ -151,6 +151,60 @@ func TestUnknownCredentialsAreRejected(t *testing.T) {
 	}
 }
 
+// Reads mask a denial as ErrNotFound so the viewer cannot be probed, but a
+// write has no bucket to probe and must say what actually happened.
+func TestWriteReportsDeniedCredentialsAsSuch(t *testing.T) {
+	fake := newFake(t)
+	reader := newStore(t, fake, viewerKey, viewerSecret)
+
+	err := reader.PutNew(context.Background(), "objects/abc", []byte("data"), "text/plain")
+	if !errors.Is(err, store.ErrAccessDenied) {
+		t.Fatalf("PutNew error = %v, want ErrAccessDenied", err)
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		t.Error("a refused write should not look like a missing object")
+	}
+}
+
+// A read still masks the denial, but the cause stays recognisable so the
+// viewer can log a broken deployment instead of silently 404ing every link.
+func TestDeniedReadIsMaskedButStillRecognisable(t *testing.T) {
+	fake := newFake(t)
+	uploader := newStore(t, fake, uploaderKey, uploaderSecret)
+	ctx := context.Background()
+
+	if err := uploader.PutNew(ctx, "objects/abc", []byte("data"), "text/plain"); err != nil {
+		t.Fatalf("PutNew: %v", err)
+	}
+	_, _, err := uploader.Get(ctx, "objects/abc")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Get error = %v, want it masked as ErrNotFound", err)
+	}
+	if !store.AccessDenied(err) {
+		t.Error("AccessDenied should still recognise the masked denial")
+	}
+	// Credentials that may read report a genuinely missing key as missing.
+	reader := newStore(t, fake, viewerKey, viewerSecret)
+	if _, _, err := reader.Get(ctx, "objects/definitely-not-there"); store.AccessDenied(err) {
+		t.Error("AccessDenied reported a genuinely missing object as a denial")
+	}
+}
+
+// The fake pins the signing region, so a client that signs for the wrong one
+// is rejected here just as a real backend would reject it.
+func TestSigningRegionIsChecked(t *testing.T) {
+	fake := newFake(t)
+	cfg := fake.Config(uploaderKey, uploaderSecret)
+	cfg.Region = "totally-bogus-region"
+	s, err := store.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutNew(context.Background(), "objects/abc", []byte("data"), "text/plain"); err == nil {
+		t.Fatal("a request signed for the wrong region was accepted")
+	}
+}
+
 func TestWrongSecretIsRejected(t *testing.T) {
 	fake := newFake(t)
 	s := newStore(t, fake, uploaderKey, "wrong-secret")

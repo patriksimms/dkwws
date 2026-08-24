@@ -44,7 +44,12 @@ func parseAuthorization(header string) (signature, error) {
 
 // verify recomputes the request signature from the secret key and compares it
 // with the one the client sent.
-func (s signature) verify(r *http.Request, secretKey, payloadHash string) error {
+//
+// The credential scope is checked against the region and service the server
+// expects rather than simply trusted. Deriving the signing key from whatever
+// the client claimed would accept any region, and a client that sent the wrong
+// one would pass here while a real backend rejected it.
+func (s signature) verify(r *http.Request, secretKey, region, payloadHash string) error {
 	amzDate := r.Header.Get("X-Amz-Date")
 	if amzDate == "" {
 		return fmt.Errorf("missing X-Amz-Date")
@@ -55,6 +60,12 @@ func (s signature) verify(r *http.Request, secretKey, payloadHash string) error 
 	}
 	if !strings.HasPrefix(amzDate, parts[0]) {
 		return fmt.Errorf("credential scope date %q does not match X-Amz-Date %q", parts[0], amzDate)
+	}
+	if parts[1] != region {
+		return fmt.Errorf("request signed for region %q, want %q", parts[1], region)
+	}
+	if parts[2] != "s3" {
+		return fmt.Errorf("request signed for service %q, want s3", parts[2])
 	}
 
 	canonicalRequest := strings.Join([]string{
