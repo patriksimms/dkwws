@@ -1,11 +1,13 @@
 // Package s3fake is an in-process S3-compatible server covering exactly the
-// contract dkwws depends on: SigV4-signed PutObject, GetObject and HeadObject
-// with path-style addressing and conditional creation via If-None-Match.
+// contract dkwws depends on: SigV4-signed PutObject with path-style addressing
+// and conditional creation via If-None-Match, plus unauthenticated GetObject
+// on one publicly readable prefix.
 //
 // It exists so the delivery path can be tested end to end — real config
 // loading, real AWS SDK, real signatures, real HTTP — without a container
-// runtime. It also models the restricted credential scope: listing, deleting
-// and every other operation are refused for all credentials.
+// runtime. It models the bucket policy as well as the credential scope:
+// anonymous reads work under the public prefix and nowhere else, and listing,
+// deleting and every other operation are refused for everyone.
 package s3fake
 
 import (
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"github.com/patriksimms/dkwws/internal/config"
+	"github.com/patriksimms/dkwws/internal/link"
 )
 
 // Permissions describes which key prefixes one set of credentials may read
@@ -29,18 +32,10 @@ type Permissions struct {
 	Write []string
 }
 
-// UploaderPermissions and ViewerPermissions mirror the two credential scopes
-// described in the README: an uploader writes objects and link records and
-// reads link records back for renewal; a viewer only reads.
-var (
-	UploaderPermissions = Permissions{
-		Read:  []string{"links/"},
-		Write: []string{"objects/", "links/"},
-	}
-	ViewerPermissions = Permissions{
-		Read: []string{"links/", "objects/"},
-	}
-)
+// UploaderPermissions mirrors the credential scope described in the README: a
+// machine may create objects under the public prefix and do nothing else, not
+// even read them back.
+var UploaderPermissions = Permissions{Write: []string{"public/"}}
 
 func allows(prefixes []string, key string) bool {
 	for _, prefix := range prefixes {
@@ -66,8 +61,9 @@ type object struct {
 type Server struct {
 	*httptest.Server
 
-	bucket string
-	region string
+	bucket       string
+	region       string
+	publicPrefix string
 
 	mu       sync.Mutex
 	creds    map[string]credential
@@ -79,15 +75,24 @@ type Server struct {
 // New starts a fake backend serving one bucket.
 func New(bucket string) *Server {
 	s := &Server{
-		bucket:   bucket,
-		region:   config.DefaultRegion,
-		creds:    map[string]credential{},
-		objects:  map[string]object{},
-		putCount: map[string]int{},
-		now:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		bucket:       bucket,
+		region:       config.DefaultRegion,
+		publicPrefix: link.Prefix,
+		creds:        map[string]credential{},
+		objects:      map[string]object{},
+		putCount:     map[string]int{},
+		now:          time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	return s
+}
+
+// SetPublicPrefix changes which prefix anonymous readers may fetch, so a test
+// can model a bucket whose policy was never applied.
+func (s *Server) SetPublicPrefix(prefix string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.publicPrefix = prefix
 }
 
 // AddCredential registers an access key and what it is allowed to do.
@@ -148,15 +153,32 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	perms, ok := s.authenticate(w, r, body)
-	if !ok {
+	bucket, key, ok := splitPath(r.URL.Path)
+	if !ok || bucket != s.bucket {
+		// Bucket-level operations, including listing, are never permitted,
+		// with or without credentials.
+		writeError(w, r, http.StatusForbidden, "AccessDenied", "not permitted on this bucket")
 		return
 	}
 
-	bucket, key, ok := splitPath(r.URL.Path)
-	if !ok || bucket != s.bucket {
-		// Bucket-level operations, including listing, are never permitted.
-		writeError(w, r, http.StatusForbidden, "AccessDenied", "not permitted on this bucket")
+	// The bucket policy: anyone may read under the public prefix. This runs
+	// before authentication because that is what "public" means.
+	isRead := r.Method == http.MethodGet || r.Method == http.MethodHead
+	if isRead && r.Header.Get("Authorization") == "" {
+		s.mu.Lock()
+		publicPrefix := s.publicPrefix
+		s.mu.Unlock()
+		if !strings.HasPrefix(key, publicPrefix) {
+			writeError(w, r, http.StatusForbidden, "AccessDenied",
+				"anonymous access is only permitted under "+publicPrefix)
+			return
+		}
+		s.get(w, r, key)
+		return
+	}
+
+	perms, ok := s.authenticate(w, r, body)
+	if !ok {
 		return
 	}
 

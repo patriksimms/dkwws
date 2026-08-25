@@ -34,12 +34,10 @@ func (a *App) now() time.Time {
 	return time.Now()
 }
 
-const usage = `dkwws uploads a self-contained file and returns a share link that expires
-after 30 days.
+const usage = `dkwws uploads a self-contained file and prints a link to it.
 
 Usage:
-  dkwws upload [flags] <file>   upload a file and print its share URL
-  dkwws renew [flags] <url>     issue a fresh link for an already-uploaded file
+  dkwws upload [flags] <file>   upload a file and print its URL
   dkwws version                 print the version
 
 Configuration is read from the environment, falling back to a KEY=value file
@@ -47,11 +45,12 @@ at ${XDG_CONFIG_HOME:-~/.config}/dkwws/config with mode 0600:
 
   DKWWS_S3_ENDPOINT           https endpoint of the S3-compatible backend
   DKWWS_S3_REGION             signing region (default us-east-1)
-  DKWWS_S3_BUCKET             private bucket holding objects and link records
+  DKWWS_S3_BUCKET             the bucket to upload into
   DKWWS_S3_ACCESS_KEY_ID      this machine's access key
   DKWWS_S3_SECRET_ACCESS_KEY  this machine's secret key
   DKWWS_S3_PATH_STYLE         path-style addressing (default true)
-  DKWWS_VIEWER_BASE_URL       public origin of the viewer, e.g. https://dkwws.example.com
+  DKWWS_PUBLIC_BASE_URL       where the bucket is publicly served, if that is
+                              not the endpoint itself
 `
 
 // Run executes one command and returns the process exit code.
@@ -64,8 +63,6 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	switch cmd := args[0]; cmd {
 	case "upload":
 		err = a.upload(ctx, args[1:])
-	case "renew":
-		err = a.renew(ctx, args[1:])
 	case "version", "--version", "-version":
 		fmt.Fprintln(a.Stdout, Version)
 		return 0
@@ -96,17 +93,12 @@ func (a *App) newFlagSet(name string) *flag.FlagSet {
 }
 
 // openStore loads configuration and connects to the backend.
-func (a *App) openStore(needViewerURL bool) (*store.Store, config.Config, error) {
+func (a *App) openStore() (*store.Store, config.Config, error) {
 	cfg, src, err := config.Load()
 	if err != nil {
 		return nil, cfg, err
 	}
-	if needViewerURL {
-		err = cfg.ValidateForUpload()
-	} else {
-		err = cfg.Validate()
-	}
-	if err != nil {
+	if err := cfg.Validate(); err != nil {
 		if src.FilePath != "" {
 			return nil, cfg, fmt.Errorf("%w (config file: %s)", err, src.FilePath)
 		}

@@ -1,5 +1,7 @@
-// Package link defines share-link tokens, object identifiers and the link
-// records that connect a share link to a stored object.
+// Package link builds the storage key and public URL for an uploaded file.
+//
+// The key carries all the secrecy: a link is unguessable because the object id
+// in its path is, not because anything checks who is asking.
 package link
 
 import (
@@ -7,25 +9,20 @@ import (
 	"encoding/base32"
 	"fmt"
 	"mime"
+	"net/url"
 	"path"
 	"strings"
-	"time"
 )
 
 const (
-	// TokenBytes is the amount of entropy in a share-link token. 20 bytes is
-	// 160 bits, comfortably above the 128-bit minimum required for links that
-	// are only protected by being unguessable.
-	TokenBytes = 20
-	// ObjectIDBytes is the amount of entropy in an object identifier. Object
-	// ids are never public, but they must not collide across uploads.
-	ObjectIDBytes = 16
+	// ObjectIDBytes is the amount of entropy in an object id. At 20 bytes it
+	// is 160 bits, comfortably above the 128-bit minimum. This is the only
+	// thing standing between a stranger and the file, so it is generous.
+	ObjectIDBytes = 20
 
-	// DefaultTTL is how long a freshly created share link stays valid.
-	DefaultTTL = 30 * 24 * time.Hour
-
-	// RecordVersion is the schema version written into every link record.
-	RecordVersion = 1
+	// Prefix is the publicly readable prefix every upload lands under. The
+	// rest of the bucket stays private.
+	Prefix = "public/"
 
 	// DefaultContentType is used when a file extension carries no useful hint.
 	DefaultContentType = "application/octet-stream"
@@ -39,28 +36,22 @@ const (
 // message and typed back by hand.
 var encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
-// tokenLen and objectIDLen are the encoded lengths of a token and an object id.
-var (
-	tokenLen    = encoding.EncodedLen(TokenBytes)
-	objectIDLen = encoding.EncodedLen(ObjectIDBytes)
-)
+// objectIDLen is the encoded length of an object id.
+var objectIDLen = encoding.EncodedLen(ObjectIDBytes)
 
-func randomID(n int) (string, error) {
-	buf := make([]byte, n)
+// NewObjectID returns a fresh object identifier.
+func NewObjectID() (string, error) {
+	buf := make([]byte, ObjectIDBytes)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("read random bytes: %w", err)
 	}
 	return strings.ToLower(encoding.EncodeToString(buf)), nil
 }
 
-// NewToken returns a fresh share-link token.
-func NewToken() (string, error) { return randomID(TokenBytes) }
-
-// NewObjectID returns a fresh object identifier.
-func NewObjectID() (string, error) { return randomID(ObjectIDBytes) }
-
-func validID(s string, want int) bool {
-	if len(s) != want {
+// ValidObjectID reports whether s is shaped like an object id this tool
+// issued.
+func ValidObjectID(s string) bool {
+	if len(s) != objectIDLen {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
@@ -73,56 +64,30 @@ func validID(s string, want int) bool {
 	return true
 }
 
-// ValidToken reports whether s is shaped like a token this tool issued. It is
-// a cheap filter that lets the viewer reject junk before touching storage.
-func ValidToken(s string) bool { return validID(s, tokenLen) }
-
-// ValidObjectID reports whether s is shaped like an object id this tool issued.
-func ValidObjectID(s string) bool { return validID(s, objectIDLen) }
-
-// ObjectKey returns the storage key holding the bytes of an uploaded file.
-func ObjectKey(id string) string { return "objects/" + id }
-
-// LinkKey returns the storage key holding a link record.
-func LinkKey(token string) string { return "links/" + token + ".json" }
-
-// Record is the private JSON document stored at LinkKey. It points at an
-// uploaded object and carries everything the viewer needs to serve it.
-type Record struct {
-	Version     int       `json:"version"`
-	ObjectKey   string    `json:"object_key"`
-	Filename    string    `json:"filename"`
-	ContentType string    `json:"content_type"`
-	Size        int64     `json:"size"`
-	SHA256      string    `json:"sha256"`
-	CreatedAt   time.Time `json:"created_at"`
-	ExpiresAt   time.Time `json:"expires_at"`
+// ObjectKey returns the storage key for an upload. The random id sits in the
+// path rather than the filename, so the URL still ends in a real name and two
+// uploads of the same filename cannot collide.
+func ObjectKey(id, filename string) string {
+	return Prefix + id + "/" + filename
 }
 
-// Expired reports whether the link has passed its expiry at time now.
-func (r Record) Expired(now time.Time) bool { return !now.Before(r.ExpiresAt) }
-
-// Validate checks that a record read back from storage is usable. A record
-// that fails validation is treated exactly like a missing one.
-func (r Record) Validate() error {
-	if r.Version != RecordVersion {
-		return fmt.Errorf("unsupported link record version %d", r.Version)
+// PublicURL returns the address the object is served at.
+func PublicURL(base, key string) (string, error) {
+	u, err := url.Parse(strings.TrimRight(base, "/"))
+	if err != nil {
+		return "", fmt.Errorf("parse public base URL: %w", err)
 	}
-	id, ok := strings.CutPrefix(r.ObjectKey, "objects/")
-	if !ok || !ValidObjectID(id) {
-		return fmt.Errorf("link record has malformed object key")
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("public base URL must be absolute, got %q", base)
 	}
-	if r.Filename == "" || r.Filename != SanitizeFilename(r.Filename) {
-		return fmt.Errorf("link record has malformed filename")
-	}
-	if r.ExpiresAt.IsZero() {
-		return fmt.Errorf("link record has no expiry")
-	}
-	return nil
+	u.Path = strings.TrimRight(u.Path, "/") + "/" + key
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), nil
 }
 
 // SanitizeFilename reduces an arbitrary path to a single URL path segment that
-// is safe to put in a link and to echo back in a Content-Disposition header.
+// is safe to put in a storage key and in a link.
 func SanitizeFilename(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
 	name = path.Base(name)
@@ -150,9 +115,6 @@ func SanitizeFilename(name string) string {
 		if len(ext) > 16 {
 			ext = ""
 		}
-		// Trim again: the cut can land on a separator, and a name that is not
-		// a fixed point of this function is rejected by Record.Validate,
-		// which would turn a successful upload into a permanently dead link.
 		// The prefix cannot become empty: out was already trimmed, so it does
 		// not start with a separator, and maxLen leaves room for it.
 		out = strings.Trim(out[:maxLen-len(ext)], "-.") + ext
@@ -162,6 +124,9 @@ func SanitizeFilename(name string) string {
 
 // ContentTypeFor guesses a content type from a filename. HTML is pinned to a
 // UTF-8 charset so self-contained plans render correctly in the browser.
+//
+// The stored content type is the only thing that decides how a browser treats
+// the file, because nothing sits in front of the bucket to correct it later.
 func ContentTypeFor(filename string) string {
 	switch strings.ToLower(path.Ext(filename)) {
 	case ".html", ".htm":

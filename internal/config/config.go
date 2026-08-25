@@ -25,7 +25,7 @@ const (
 	KeyAccessKeyID   = "DKWWS_S3_ACCESS_KEY_ID"
 	KeySecretKey     = "DKWWS_S3_SECRET_ACCESS_KEY"
 	KeyPathStyle     = "DKWWS_S3_PATH_STYLE"
-	KeyViewerBaseURL = "DKWWS_VIEWER_BASE_URL"
+	KeyPublicBaseURL = "DKWWS_PUBLIC_BASE_URL"
 	KeyAllowInsecure = "DKWWS_S3_ALLOW_INSECURE"
 
 	// KeyConfigFile overrides the XDG configuration-file location.
@@ -47,9 +47,10 @@ type Config struct {
 	// virtual-hosted addressing. It defaults to true because self-hosted
 	// backends rarely offer per-bucket subdomains.
 	PathStyle bool
-	// ViewerBaseURL is the public origin of the viewer, used by the CLI to
-	// build share URLs. The viewer itself does not need it.
-	ViewerBaseURL string
+	// PublicBaseURL is where the bucket's public prefix is reachable. It is
+	// optional: when empty it is derived from the endpoint and bucket. Set it
+	// when the bucket is published on its own domain or behind a CDN.
+	PublicBaseURL string
 	// AllowInsecure permits a plain-http endpoint on a non-loopback host.
 	AllowInsecure bool
 }
@@ -78,7 +79,7 @@ func Load() (Config, Source, error) {
 	}
 	for _, key := range []string{
 		KeyEndpoint, KeyRegion, KeyBucket, KeyAccessKeyID, KeySecretKey,
-		KeyPathStyle, KeyViewerBaseURL, KeyAllowInsecure,
+		KeyPathStyle, KeyPublicBaseURL, KeyAllowInsecure,
 	} {
 		if v, ok := os.LookupEnv(key); ok {
 			values[key] = v
@@ -92,7 +93,7 @@ func Load() (Config, Source, error) {
 		AccessKeyID:     strings.TrimSpace(values[KeyAccessKeyID]),
 		SecretAccessKey: strings.TrimSpace(values[KeySecretKey]),
 		PathStyle:       true,
-		ViewerBaseURL:   strings.TrimSpace(values[KeyViewerBaseURL]),
+		PublicBaseURL:   strings.TrimSpace(values[KeyPublicBaseURL]),
 	}
 	if cfg.Region == "" {
 		cfg.Region = DefaultRegion

@@ -30,23 +30,34 @@ func (c Config) Validate() error {
 	return c.checkEndpoint()
 }
 
-// ValidateForUpload additionally requires the public viewer origin, which the
-// CLI needs to turn a token into a shareable URL.
-func (c Config) ValidateForUpload() error {
-	if err := c.Validate(); err != nil {
-		return err
+// PublicBase returns the address the bucket's public prefix is served at.
+//
+// It is derived from the endpoint and bucket unless DKWWS_PUBLIC_BASE_URL says
+// otherwise, so a plain setup needs one fewer setting and cannot get the two
+// out of step.
+func (c Config) PublicBase() (string, error) {
+	if c.PublicBaseURL != "" {
+		u, err := url.Parse(c.PublicBaseURL)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", KeyPublicBaseURL, err)
+		}
+		if u.Scheme == "" || u.Host == "" {
+			return "", fmt.Errorf("%s must be an absolute URL such as https://files.example.com, got %q",
+				KeyPublicBaseURL, c.PublicBaseURL)
+		}
+		return strings.TrimRight(c.PublicBaseURL, "/"), nil
 	}
-	if c.ViewerBaseURL == "" {
-		return fmt.Errorf("missing required configuration: %s", KeyViewerBaseURL)
-	}
-	u, err := url.Parse(c.ViewerBaseURL)
+
+	u, err := url.Parse(c.Endpoint)
 	if err != nil {
-		return fmt.Errorf("%s: %w", KeyViewerBaseURL, err)
+		return "", fmt.Errorf("%s: %w", KeyEndpoint, err)
 	}
-	if u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("%s must be an absolute URL such as https://dkwws.example.com, got %q", KeyViewerBaseURL, c.ViewerBaseURL)
+	if c.PathStyle {
+		u.Path = strings.TrimRight(u.Path, "/") + "/" + c.Bucket
+		return u.String(), nil
 	}
-	return nil
+	u.Host = c.Bucket + "." + u.Host
+	return strings.TrimRight(u.String(), "/"), nil
 }
 
 // checkEndpoint refuses to send long-lived credentials over plain HTTP unless

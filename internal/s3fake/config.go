@@ -12,6 +12,5 @@ func (s *Server) Config(accessKeyID, secretKey string) config.Config {
 		AccessKeyID:     accessKeyID,
 		SecretAccessKey: secretKey,
 		PathStyle:       true,
-		ViewerBaseURL:   "https://dkwws.example.com",
 	}
 }

@@ -56,10 +56,3 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath ./...
-
-  docker:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build the viewer image
-        run: docker build -t dkwws-viewer:ci .

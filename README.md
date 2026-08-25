@@ -6,43 +6,32 @@ S3-compatible object storage and get back a link you can paste to someone else.
 ```console
 $ dkwws upload plan.html
 uploading plan.html (41231 bytes) to dkwws
-link expires 2026-09-23 12:04 UTC
-https://dkwws.psimms.de/s/ycdpbvvbdtentlk57ixealxnhwixeg6h/plan.html
+https://dkwws.psimms.de/public/ycdpbvvbdtentlk57ixealxnhwixeg6h/plan.html
 ```
 
 Stdout is the URL and nothing else, so an agent can capture it directly.
 Progress and errors go to stderr.
 
-Links carry 160 bits of randomness, expire after 30 days and can be renewed
-without uploading the file again. The bucket itself stays private: nothing is
-ever readable without going through the viewer.
+There is no service to run and no database. The file is served straight out of
+the bucket. A link is unguessable — 160 bits of randomness in the path — and
+that is the only thing protecting it.
 
 ## How it works
 
-Two binaries and a private bucket, no database.
-
-| Binary | Runs on | Credentials |
-| --- | --- | --- |
-| `dkwws` | each trusted machine | its own upload-scoped key pair |
-| `dkwws-viewer` | one public HTTP service | one read-only key pair |
-
-The bucket holds two kinds of object:
+One binary and one bucket. Uploads land under a publicly readable prefix:
 
 ```
-objects/<object-id>        the uploaded file, stored once and kept indefinitely
-links/<link-token>.json    a link record pointing at one object
+public/<object-id>/<filename>
 ```
 
-A link record names the object, its filename, content type, size, SHA-256 and
-an expiry. Renewing a link writes a second small record next to the first,
-pointing at the same object — the file is never copied.
+The random id sits in the path rather than the filename, so the URL still ends
+in a real name and two uploads of `plan.html` cannot collide. Everything
+outside `public/` stays private.
 
-Requesting `https://<viewer>/s/<link-token>/<filename>` makes the viewer read
-the private link record, check the expiry and stream the object back with the
-recorded content type.
-
-Direct S3 presigned URLs are not used: SigV4 caps them at seven days, and a
-30-day link that can be renewed in place needs a record the tool controls.
+After storing the object, `dkwws` fetches the new URL with no credentials at
+all. A bucket whose policy was never applied is the main way this setup fails,
+and the check turns that into an immediate error instead of a colleague
+getting a 403 from a link you already sent them.
 
 ## Install
 
@@ -57,7 +46,7 @@ To build from source with Go 1.27 or newer:
 $ go build ./cmd/dkwws
 ```
 
-## Configure the CLI
+## Configure
 
 Configuration comes from the environment, falling back to a `KEY=value` file at
 `${XDG_CONFIG_HOME:-~/.config}/dkwws/config`. The environment always wins,
@@ -67,11 +56,15 @@ which keeps CI and `direnv` working without touching the file.
 | --- | --- |
 | `DKWWS_S3_ENDPOINT` | HTTPS endpoint of the backend |
 | `DKWWS_S3_REGION` | signing region, default `us-east-1` |
-| `DKWWS_S3_BUCKET` | the private bucket |
+| `DKWWS_S3_BUCKET` | the bucket to upload into |
 | `DKWWS_S3_ACCESS_KEY_ID` | this machine's access key |
 | `DKWWS_S3_SECRET_ACCESS_KEY` | this machine's secret key |
 | `DKWWS_S3_PATH_STYLE` | path-style addressing, default `true` |
-| `DKWWS_VIEWER_BASE_URL` | public origin of the viewer |
+| `DKWWS_PUBLIC_BASE_URL` | optional, see below |
+
+`DKWWS_PUBLIC_BASE_URL` is only needed when the bucket is published somewhere
+other than the S3 endpoint — its own domain, or a CDN in front. Left unset it
+is derived from the endpoint and bucket, so the two cannot drift apart.
 
 The configuration file holds long-lived credentials, so `dkwws` refuses to read
 it unless it is mode `0600`:
@@ -84,7 +77,6 @@ DKWWS_S3_ENDPOINT=https://s3.psimms.de
 DKWWS_S3_BUCKET=dkwws
 DKWWS_S3_ACCESS_KEY_ID=...
 DKWWS_S3_SECRET_ACCESS_KEY=...
-DKWWS_VIEWER_BASE_URL=https://dkwws.psimms.de
 EOF
 ```
 
@@ -97,44 +89,47 @@ secret key would go over the wire in the clear. Set
 ## Use it
 
 ```console
-$ dkwws upload plan.html                 # print the share URL
-$ dkwws upload -json plan.html           # url, object, expiry, size, sha256
-$ dkwws renew https://dkwws.../plan.html # fresh token and expiry, same file
-$ dkwws renew ycdpbvvbdtentlk57ixealxnhwixeg6h # a bare token works too
+$ dkwws upload plan.html            # print the URL
+$ dkwws upload -json plan.html      # url, object, size, sha256
+$ dkwws upload -no-verify plan.html # skip the public-readability check
 ```
 
 `upload` refuses files over 25 MiB; pass `-max-size` in bytes to override.
-`.html` and `.htm` are served as `text/html; charset=utf-8` so they render in
+`.html` and `.htm` are stored as `text/html; charset=utf-8` so they render in
 the browser; anything else is guessed from the extension and can be overridden
 with `-content-type`.
 
-Renewing an expired link is the normal case — the record is read regardless of
-its expiry, and the old link stays dead.
+The stored content type is what a browser sees. Nothing sits in front of the
+bucket to correct it afterwards, so getting it right at upload time is the
+whole of the mechanism.
 
-## Deploy the viewer
+## Set up the bucket
 
-The viewer is a single static binary that reads the same `DKWWS_S3_*` settings
-plus `DKWWS_LISTEN_ADDR` (default `:8080`). It does not need
-`DKWWS_VIEWER_BASE_URL`. `GET /healthz` returns `ok`.
+Two things: a policy that publishes `public/*` to anonymous readers, and one
+upload-scoped key pair per machine.
 
-The repository root builds a distroless image:
+The bucket policy, in AWS syntax:
 
-```console
-$ docker build -t dkwws-viewer .
-$ docker run --rm -p 8080:8080 --env-file viewer.env dkwws-viewer
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::dkwws/public/*"
+    }
+  ]
+}
 ```
 
-On Coolify, create an application from this repository with the Dockerfile
-build pack, set the domain, expose port 8080, point the health check at
-`/healthz` and set the `DKWWS_S3_*` variables to the **read-only** key pair.
+Publish the prefix, not the bucket. A bucket-wide grant would expose anything
+else you ever put in it, and granting `s3:ListBucket` would turn unguessable
+links into a directory listing.
 
-Nothing else is needed: no database, no volume, no background job.
-
-## Credentials
-
-Two scopes, provisioned however your backend does it. Written as an AWS-style
-policy, an uploader may write objects and link records and read link records
-back so it can renew them:
+An uploader may create objects under that prefix and do nothing else — not even
+read them back:
 
 ```json
 {
@@ -143,84 +138,50 @@ back so it can renew them:
     {
       "Effect": "Allow",
       "Action": "s3:PutObject",
-      "Resource": [
-        "arn:aws:s3:::dkwws/objects/*",
-        "arn:aws:s3:::dkwws/links/*"
-      ]
-    },
-    {
-      "Effect": "Allow",
-      "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::dkwws/links/*"
+      "Resource": "arn:aws:s3:::dkwws/public/*"
     }
   ]
 }
 ```
 
-The viewer only reads:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": "s3:GetObject",
-      "Resource": [
-        "arn:aws:s3:::dkwws/objects/*",
-        "arn:aws:s3:::dkwws/links/*"
-      ]
-    }
-  ]
-}
-```
-
-Neither may list the bucket, delete anything, change policies, call
-administrative APIs or touch another bucket. Give every machine its own key
-pair so it can be revoked on its own. `dkwws renew` deliberately never reads
-`objects/`, so the uploader policy above is genuinely sufficient.
-
-Keep the bucket itself private. A public-read bucket policy would hand out
-every object regardless of link expiry.
+No listing, no deleting, no policy changes, no administrative APIs, no other
+bucket. Give every machine its own key pair so it can be revoked on its own.
 
 ## S3 compatibility
 
-dkwws depends on Signature Version 4 and three data operations:
+dkwws depends on Signature Version 4 and one write operation:
 
 - `PutObject`, including conditional creation with `If-None-Match: *`
-- `GetObject`, streaming, with content type and length
-- `HeadObject`
 
-plus a configurable endpoint, region, bucket and path-style addressing. No
+plus a configurable endpoint, region, bucket and path-style addressing, and a
+bucket policy that serves the public prefix to anonymous `GetObject`. No
 provider-specific administration API is used. The flexible-checksum trailers
 newer AWS SDKs add by default are switched off, because many S3-compatible
-backends reject them; dkwws records its own SHA-256 in the link record instead.
+backends reject them.
 
 `If-None-Match: *` is what makes two uploads of the same filename safe: every
-upload picks a fresh random object id and creates it conditionally, so an
-upload can never overwrite an existing object. A backend that ignores the
-header would break that guarantee, which is why it is part of the contract
-rather than an optimisation.
+upload picks a fresh random id and creates the object conditionally, so an
+upload can never overwrite an existing one.
 
 RustFS is the first integration target. AWS S3, MinIO, Garage and Cloudflare R2
 should satisfy the contract but are only supported once they have been run
 against the integration tests.
 
-## What the link does and does not protect
+## What a link does and does not protect
 
-A link is a bearer token: anyone holding the URL can read the file until it
-expires. There are no accounts and no per-recipient access.
+A link is a permanent bearer URL. Anyone holding it can read the file until
+you delete the object, and there is no way to revoke one link without deleting
+what it points at. Treat the URL itself as the secret: it will sit in chat
+logs, browser history and referrer headers.
 
-The viewer sends `X-Robots-Tag: noindex, nofollow`, serves a `robots.txt` that
-disallows everything, marks responses `private`, and never lets a cache outlive
-the link's own expiry. Rejected tokens all produce the same 404 whether they
-are malformed, unknown or simply not yours, so the viewer cannot be used to
-probe the bucket. Tokens are truncated in the viewer's logs, because a full
-token in a log line is a working link.
+Links do not expire. That was a deliberate trade — enforcing an expiry needs a
+service in front of the bucket, because SigV4 caps presigned URLs at seven
+days. If you need time-limited links later, a bucket lifecycle rule can delete
+objects after N days, or a small viewer service can expire individual links
+while keeping the file.
 
-Uploaded HTML runs in the viewer's origin. The viewer sets no cookies and has
-no authenticated surface, so there is nothing there to steal — but do not host
-the viewer on a domain that shares cookies with something that does.
+Uploaded HTML runs in whatever origin the bucket is served from. Do not publish
+it on a domain that shares cookies with something that matters.
 
 ## Development
 
@@ -230,13 +191,13 @@ $ go vet ./...
 $ gofmt -l .
 ```
 
-The tests run the whole delivery path in-process against
-`internal/s3fake`, an S3-compatible server that verifies every SigV4 signature
-with an independent implementation and enforces the same prefix-scoped
-credential policies documented above. No container runtime is required.
+The tests run the whole upload path in-process against `internal/s3fake`, an
+S3-compatible server that verifies every SigV4 signature with an independent
+implementation and models both the bucket policy and the uploader's credential
+scope. No container runtime is required.
 
 ## Scope
 
-Single self-contained files only. No permanent links, no bucket browser, no
-delete command, no multi-file sites. Uploaded objects are kept indefinitely;
-only the links expire.
+Single self-contained files only. No expiry, no renewal, no viewer service, no
+bucket browser, no delete command, no multi-file sites. Uploaded objects stay
+until you remove them.

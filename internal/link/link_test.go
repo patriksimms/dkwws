@@ -3,38 +3,37 @@ package link
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestNewTokenHasEnoughEntropy(t *testing.T) {
-	if TokenBytes*8 < 128 {
-		t.Fatalf("token entropy is %d bits, want at least 128", TokenBytes*8)
+func TestNewObjectIDHasEnoughEntropy(t *testing.T) {
+	if ObjectIDBytes*8 < 128 {
+		t.Fatalf("object id entropy is %d bits, want at least 128", ObjectIDBytes*8)
 	}
 	seen := map[string]bool{}
 	for i := 0; i < 1000; i++ {
-		token, err := NewToken()
+		id, err := NewObjectID()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !ValidToken(token) {
-			t.Fatalf("NewToken produced %q, which ValidToken rejects", token)
+		if !ValidObjectID(id) {
+			t.Fatalf("NewObjectID produced %q, which ValidObjectID rejects", id)
 		}
-		if seen[token] {
-			t.Fatalf("NewToken repeated %q", token)
+		if seen[id] {
+			t.Fatalf("NewObjectID repeated %q", id)
 		}
-		seen[token] = true
+		seen[id] = true
 	}
 }
 
-func TestValidToken(t *testing.T) {
-	good, err := NewToken()
+func TestValidObjectID(t *testing.T) {
+	good, err := NewObjectID()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name  string
-		token string
-		want  bool
+		name string
+		id   string
+		want bool
 	}{
 		{"generated", good, true},
 		{"empty", "", false},
@@ -45,10 +44,48 @@ func TestValidToken(t *testing.T) {
 		{"outside base32 alphabet", strings.Repeat("1", len(good)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ValidToken(tc.token); got != tc.want {
-				t.Errorf("ValidToken(%q) = %v, want %v", tc.token, got, tc.want)
+			if got := ValidObjectID(tc.id); got != tc.want {
+				t.Errorf("ValidObjectID(%q) = %v, want %v", tc.id, got, tc.want)
 			}
 		})
+	}
+}
+
+// The key is the whole secret, so it must land under the public prefix and
+// carry the random id in its own path segment.
+func TestObjectKey(t *testing.T) {
+	id, err := NewObjectID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := ObjectKey(id, "plan.html")
+	if want := "public/" + id + "/plan.html"; key != want {
+		t.Errorf("ObjectKey = %q, want %q", key, want)
+	}
+	if !strings.HasPrefix(key, Prefix) {
+		t.Errorf("ObjectKey = %q, want it under %q", key, Prefix)
+	}
+}
+
+func TestPublicURL(t *testing.T) {
+	for _, base := range []string{
+		"https://s3.example.com/dkwws",
+		"https://s3.example.com/dkwws/",
+	} {
+		got, err := PublicURL(base, "public/abc/plan.html")
+		if err != nil {
+			t.Fatalf("PublicURL(%q): %v", base, err)
+		}
+		want := "https://s3.example.com/dkwws/public/abc/plan.html"
+		if got != want {
+			t.Errorf("PublicURL(%q) = %q, want %q", base, got, want)
+		}
+	}
+}
+
+func TestPublicURLRejectsRelativeBase(t *testing.T) {
+	if _, err := PublicURL("s3.example.com", "public/abc/plan.html"); err == nil {
+		t.Error("PublicURL accepted a base URL with no scheme")
 	}
 }
 
@@ -70,32 +107,27 @@ func TestSanitizeFilename(t *testing.T) {
 	}
 }
 
-// A name that is not a fixed point of SanitizeFilename would be written into a
-// link record that Record.Validate then rejects, so the upload would report
-// success and hand back a URL that 404s forever. Truncation is the case that
-// gets this wrong: the cut can land on a separator.
-func TestSanitizeFilenameIsIdempotent(t *testing.T) {
+// The result becomes one segment of a URL, so it must never reintroduce a
+// separator or an empty segment however it was truncated.
+func TestSanitizeFilenameIsAlwaysOneSafeSegment(t *testing.T) {
 	inputs := []string{"plan.html", "../../etc/passwd", "my plan.html", "", "..",
 		"计划.html", strings.Repeat("a", 200), strings.Repeat("a", 200) + ".html"}
-	// Every offset of a separator relative to the truncation point.
 	for _, unit := range []string{"ab ", "abc ", "abcd ", "a ", "..a", "a-"} {
 		inputs = append(inputs, strings.Repeat(unit, 120))
 	}
 	for _, in := range inputs {
-		once := SanitizeFilename(in)
-		twice := SanitizeFilename(once)
-		if twice != once {
-			t.Errorf("SanitizeFilename(%q...) = %q, then %q", in[:min(len(in), 12)], once, twice)
+		got := SanitizeFilename(in)
+		if got == "" {
+			t.Errorf("SanitizeFilename(%q...) is empty", in[:min(len(in), 12)])
 		}
-		rec := Record{
-			Version:   RecordVersion,
-			ObjectKey: "objects/" + strings.Repeat("a", 26),
-			Filename:  once,
-			ExpiresAt: time.Now(),
+		if strings.ContainsAny(got, "/\\") {
+			t.Errorf("SanitizeFilename(%q...) = %q contains a separator", in[:min(len(in), 12)], got)
 		}
-		if err := rec.Validate(); err != nil {
-			t.Errorf("a record naming SanitizeFilename(%q...) = %q is invalid: %v",
-				in[:min(len(in), 12)], once, err)
+		if strings.HasPrefix(got, ".") || strings.HasSuffix(got, ".") || strings.HasSuffix(got, "-") {
+			t.Errorf("SanitizeFilename(%q...) = %q has a stray separator at an end", in[:min(len(in), 12)], got)
+		}
+		if len(got) > 100 {
+			t.Errorf("SanitizeFilename(%q...) is %d bytes", in[:min(len(in), 12)], len(got))
 		}
 	}
 }
@@ -110,51 +142,5 @@ func TestContentTypeFor(t *testing.T) {
 		if got := ContentTypeFor(tc.in); got != tc.want {
 			t.Errorf("ContentTypeFor(%q) = %q, want %q", tc.in, got, tc.want)
 		}
-	}
-}
-
-func TestRecordExpired(t *testing.T) {
-	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	rec := Record{ExpiresAt: now}
-	if !rec.Expired(now) {
-		t.Error("a record is expired at exactly its expiry")
-	}
-	if rec.Expired(now.Add(-time.Nanosecond)) {
-		t.Error("a record is not expired just before its expiry")
-	}
-	if !rec.Expired(now.Add(time.Nanosecond)) {
-		t.Error("a record is expired just after its expiry")
-	}
-}
-
-func TestDefaultTTLIsThirtyDays(t *testing.T) {
-	if DefaultTTL != 30*24*time.Hour {
-		t.Errorf("DefaultTTL = %v, want 720h", DefaultTTL)
-	}
-}
-
-func TestRecordValidate(t *testing.T) {
-	valid := Record{
-		Version:   RecordVersion,
-		ObjectKey: "objects/" + strings.Repeat("a", 26),
-		Filename:  "plan.html",
-		ExpiresAt: time.Now(),
-	}
-	if err := valid.Validate(); err != nil {
-		t.Fatalf("valid record rejected: %v", err)
-	}
-	for name, mutate := range map[string]func(Record) Record{
-		"wrong version":     func(r Record) Record { r.Version = 99; return r },
-		"key outside scope": func(r Record) Record { r.ObjectKey = "links/abc.json"; return r },
-		"traversal key":     func(r Record) Record { r.ObjectKey = "objects/../links/x"; return r },
-		"unsafe filename":   func(r Record) Record { r.Filename = "../x.html"; return r },
-		"empty filename":    func(r Record) Record { r.Filename = ""; return r },
-		"no expiry":         func(r Record) Record { r.ExpiresAt = time.Time{}; return r },
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := mutate(valid).Validate(); err == nil {
-				t.Error("Validate accepted a malformed record")
-			}
-		})
 	}
 }

@@ -28,12 +28,10 @@ jobs:
             goarch=${target#*/}
             stage="dist/dkwws_${VERSION}_${goos}_${goarch}"
             mkdir -p "$stage"
-            for cmd in dkwws dkwws-viewer; do
-              CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build \
-                -trimpath \
-                -ldflags "-s -w -X github.com/patriksimms/dkwws/internal/cli.Version=${VERSION} -X main.version=${VERSION}" \
-                -o "$stage/$cmd" "./cmd/$cmd"
-            done
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build \
+              -trimpath \
+              -ldflags "-s -w -X github.com/patriksimms/dkwws/internal/cli.Version=${VERSION}" \
+              -o "$stage/dkwws" ./cmd/dkwws
             cp README.md "$stage/"
             tar -czf "${stage}.tar.gz" -C dist "$(basename "$stage")"
             rm -rf "$stage"

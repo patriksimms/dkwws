@@ -18,7 +18,7 @@ func isolate(t *testing.T) string {
 	for _, key := range []string{
 		config.KeyEndpoint, config.KeyRegion, config.KeyBucket,
 		config.KeyAccessKeyID, config.KeySecretKey, config.KeyPathStyle,
-		config.KeyViewerBaseURL, config.KeyAllowInsecure,
+		config.KeyPublicBaseURL, config.KeyAllowInsecure,
 	} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
@@ -42,14 +42,13 @@ func TestLoadFromEnvironment(t *testing.T) {
 	t.Setenv(config.KeyBucket, "dkwws")
 	t.Setenv(config.KeyAccessKeyID, "AKIA")
 	t.Setenv(config.KeySecretKey, "secret")
-	t.Setenv(config.KeyViewerBaseURL, "https://dkwws.example.com")
 
 	cfg, _, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := cfg.ValidateForUpload(); err != nil {
-		t.Fatalf("ValidateForUpload: %v", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 	if cfg.Region != config.DefaultRegion {
 		t.Errorf("Region = %q, want the default %q", cfg.Region, config.DefaultRegion)
@@ -67,7 +66,6 @@ DKWWS_S3_BUCKET = "dkwws"
 DKWWS_S3_ACCESS_KEY_ID='AKIA'
 DKWWS_S3_SECRET_ACCESS_KEY=secret
 DKWWS_S3_PATH_STYLE=false
-DKWWS_VIEWER_BASE_URL=https://dkwws.example.com
 `, 0o600)
 
 	cfg, src, err := config.Load()
@@ -77,8 +75,8 @@ DKWWS_VIEWER_BASE_URL=https://dkwws.example.com
 	if src.FilePath != path {
 		t.Errorf("FilePath = %q, want %q", src.FilePath, path)
 	}
-	if err := cfg.ValidateForUpload(); err != nil {
-		t.Fatalf("ValidateForUpload: %v", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 	if cfg.Bucket != "dkwws" || cfg.AccessKeyID != "AKIA" || cfg.SecretAccessKey != "secret" {
 		t.Errorf("parsed config = %+v", cfg)
@@ -150,17 +148,46 @@ func TestValidateNamesEveryMissingKey(t *testing.T) {
 	}
 }
 
-func TestValidateForUploadRequiresViewerBaseURL(t *testing.T) {
-	cfg := config.Config{
+// The public address is derived from the endpoint and bucket, so a plain setup
+// needs one fewer setting and cannot get the two out of step.
+func TestPublicBaseIsDerivedFromTheEndpoint(t *testing.T) {
+	base := config.Config{
 		Endpoint: "https://s3.example.com", Region: "us-east-1", Bucket: "dkwws",
 		AccessKeyID: "AKIA", SecretAccessKey: "secret",
 	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
+	for _, tc := range []struct {
+		name      string
+		pathStyle bool
+		override  string
+		want      string
+	}{
+		{"path style", true, "", "https://s3.example.com/dkwws"},
+		{"virtual host", false, "", "https://dkwws.s3.example.com"},
+		{"explicit override", true, "https://files.example.com", "https://files.example.com"},
+		{"override with trailing slash", true, "https://files.example.com/", "https://files.example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			cfg.PathStyle = tc.pathStyle
+			cfg.PublicBaseURL = tc.override
+			got, err := cfg.PublicBase()
+			if err != nil {
+				t.Fatalf("PublicBase: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("PublicBase = %q, want %q", got, tc.want)
+			}
+		})
 	}
-	err := cfg.ValidateForUpload()
-	if err == nil || !strings.Contains(err.Error(), config.KeyViewerBaseURL) {
-		t.Fatalf("ValidateForUpload error = %v, want it to name %s", err, config.KeyViewerBaseURL)
+}
+
+func TestPublicBaseRejectsRelativeOverride(t *testing.T) {
+	cfg := config.Config{
+		Endpoint: "https://s3.example.com", Bucket: "dkwws",
+		PublicBaseURL: "files.example.com",
+	}
+	if _, err := cfg.PublicBase(); err == nil || !strings.Contains(err.Error(), config.KeyPublicBaseURL) {
+		t.Fatalf("PublicBase error = %v, want it to name %s", err, config.KeyPublicBaseURL)
 	}
 }
 
