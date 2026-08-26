@@ -17,10 +17,17 @@ case "$(uname -s)" in
 	*) fail "unsupported operating system: $(uname -s)" ;;
 esac
 
-case "$(uname -m)" in
+machine=$(uname -m)
+if [ "$os" = "darwin" ] && [ "$machine" = "x86_64" ]; then
+	if [ "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" = "1" ]; then
+		machine=arm64
+	fi
+fi
+
+case "$machine" in
 	x86_64 | amd64) arch=amd64 ;;
 	aarch64 | arm64) arch=arm64 ;;
-	*) fail "unsupported architecture: $(uname -m)" ;;
+	*) fail "unsupported architecture: $machine" ;;
 esac
 
 if [ "$os/$arch" = "darwin/amd64" ]; then
