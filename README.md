@@ -16,6 +16,12 @@ Expecially useul for agents to share HTML plans which you (and others) can acces
 There is no service to run and no database. The file is served straight out of
 the bucket. A link is unguessable — 160 bits of randomness in the path.
 
+## Getting started quickly
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/patriksimms/dkwws/main/install.sh | sh
+```
+
 ## How it works
 
 Uploads land under a publicly readable prefix:
@@ -30,10 +36,6 @@ outside `public/` stays private.
 
 
 ## Install
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/patriksimms/dkwws/main/install.sh | sh
-```
 
 The installer downloads the latest release for Linux amd64, Linux arm64 or
 macOS arm64, verifies its checksum, and installs `dkwws` to `~/.local/bin`.
