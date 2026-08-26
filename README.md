@@ -31,10 +31,26 @@ outside `public/` stays private.
 
 ## Install
 
-Download a release archive for your platform from the
-[releases page](https://github.com/patriksimms/dkwws/releases) and put `dkwws`
-on your `PATH`. Builds are published for Linux amd64, Linux arm64 and macOS
-arm64.
+```sh
+curl -fsSL https://raw.githubusercontent.com/patriksimms/dkwws/main/install.sh | sh
+```
+
+The installer downloads the latest release for Linux amd64, Linux arm64 or
+macOS arm64, verifies its checksum, and installs `dkwws` to `~/.local/bin`.
+Set `DKWWS_INSTALL_DIR` to use another directory:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/patriksimms/dkwws/main/install.sh | DKWWS_INSTALL_DIR=/usr/local/bin sh
+```
+
+Pin a release with `DKWWS_VERSION`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/patriksimms/dkwws/main/install.sh | DKWWS_VERSION=v0.2.0 sh
+```
+
+Release archives are also available from the
+[releases page](https://github.com/patriksimms/dkwws/releases).
 
 To build from source with Go 1.27 or newer:
 

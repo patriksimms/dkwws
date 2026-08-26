@@ -27,6 +27,9 @@ jobs:
             exit 1
           fi
 
+      - name: Test installer
+        run: ./test/install.sh
+
       - name: Vet
         run: go vet ./...
 
