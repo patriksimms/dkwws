@@ -43,9 +43,6 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{fake: fake, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
 	h.app = &cli.App{Stdout: h.stdout, Stderr: h.stderr}
 
-	// Point the loader at an empty temp file so the developer's own config
-	// cannot reach the test.
-	t.Setenv(config.KeyConfigFile, filepath.Join(t.TempDir(), "config"))
 	t.Setenv(config.KeyEndpoint, fake.URL)
 	t.Setenv(config.KeyRegion, config.DefaultRegion)
 	t.Setenv(config.KeyBucket, "dkwws")

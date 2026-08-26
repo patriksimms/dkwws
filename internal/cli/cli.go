@@ -40,8 +40,7 @@ Usage:
   dkwws upload [flags] <file>   upload a file and print its URL
   dkwws version                 print the version
 
-Configuration is read from the environment, falling back to a KEY=value file
-at ${XDG_CONFIG_HOME:-~/.config}/dkwws/config with mode 0600:
+Configuration is read from the environment:
 
   DKWWS_S3_ENDPOINT           https endpoint of the S3-compatible backend
   DKWWS_S3_REGION             signing region (default us-east-1)
@@ -94,14 +93,11 @@ func (a *App) newFlagSet(name string) *flag.FlagSet {
 
 // openStore loads configuration and connects to the backend.
 func (a *App) openStore() (*store.Store, config.Config, error) {
-	cfg, src, err := config.Load()
+	cfg, err := config.Load()
 	if err != nil {
 		return nil, cfg, err
 	}
 	if err := cfg.Validate(); err != nil {
-		if src.FilePath != "" {
-			return nil, cfg, fmt.Errorf("%w (config file: %s)", err, src.FilePath)
-		}
 		return nil, cfg, err
 	}
 	s, err := store.New(cfg)
