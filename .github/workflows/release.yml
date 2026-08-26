@@ -33,7 +33,7 @@ jobs:
               -ldflags "-s -w -X github.com/patriksimms/dkwws/internal/cli.Version=${VERSION}" \
               -o "$stage/dkwws" ./cmd/dkwws
             cp README.md "$stage/"
-            tar -czf "${stage}.tar.gz" -C dist "$(basename "$stage")"
+            tar -czf "dist/dkwws_${goos}_${goarch}.tar.gz" -C dist "$(basename "$stage")"
             rm -rf "$stage"
           done
           cd dist && sha256sum ./*.tar.gz > SHA256SUMS

@@ -16,6 +16,12 @@ Expecially useul for agents to share HTML plans which you (and others) can acces
 There is no service to run and no database. The file is served straight out of
 the bucket. A link is unguessable — 160 bits of randomness in the path.
 
+## Getting started quickly
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/patriksimms/dkwws/main/install.sh | sh
+```
+
 ## How it works
 
 Uploads land under a publicly readable prefix:
@@ -31,10 +37,22 @@ outside `public/` stays private.
 
 ## Install
 
-Download a release archive for your platform from the
-[releases page](https://github.com/patriksimms/dkwws/releases) and put `dkwws`
-on your `PATH`. Builds are published for Linux amd64, Linux arm64 and macOS
-arm64.
+The installer downloads the latest release for Linux amd64, Linux arm64 or
+macOS arm64, verifies its checksum, and installs `dkwws` to `~/.local/bin`.
+Set `DKWWS_INSTALL_DIR` to use another directory:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/patriksimms/dkwws/main/install.sh | DKWWS_INSTALL_DIR=/usr/local/bin sh
+```
+
+Pin a release with `DKWWS_VERSION`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/patriksimms/dkwws/main/install.sh | DKWWS_VERSION=v0.2.0 sh
+```
+
+Release archives are also available from the
+[releases page](https://github.com/patriksimms/dkwws/releases).
 
 To build from source with Go 1.27 or newer:
 
